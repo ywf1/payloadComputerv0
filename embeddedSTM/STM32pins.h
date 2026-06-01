@@ -33,7 +33,4 @@
 
 #define PI_EN PC13
 
-
-
-
 #endif
