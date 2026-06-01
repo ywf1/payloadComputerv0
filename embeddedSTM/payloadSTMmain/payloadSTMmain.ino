@@ -77,6 +77,7 @@ bool accelBaselineSet = false;                    // Tracks if baseline accel ha
 const double liftoffAccelThreshold = 3.0;       // Acceleration threshold for liftoff (in m/s^2)
 const double liftoffAltitudeThreshold = 50.0;   // Altitude threshold for liftoff (in meters)
 
+float basevoltageread= 0.0;                     // lightsen base voltage for detecting nosecone deployment
 
 bool droguePyroActive = false;
 bool mainChutePyroActive = false;
@@ -238,11 +239,42 @@ void setup() {
 
   double acceleration = mainAxis == 0 ? accel.acceleration.x : mainAxis == 1 ? accel.acceleration.y : accel.acceleration.z;
 
+  //////////////////
+  ////light sen ////
+  //////////////////
+
+  //essentially polls light sensor data to set a baseline for the payload inside rocket
+  bool baslinelightfilled = false;
+  //baseline voltage read from the light sensor 
+  while(!baslinelightfilled)
+  {
+    int rawValue = analogRead(LIGHT_SENSER);
+    float voltage = (rawValue / ADC_RESOLUTION) * REF_VOLTAGE;
+    voltageSum -= voltageBuffer[bufferIndex];
+    voltageBuffer[bufferIndex] = voltage;
+    voltageSum += voltage;
+    bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
+    if (bufferCount < BUFFER_SIZE) 
+    {
+      bufferCount++;
+    }else
+    {
+      baslinebarfilled=true;
+    }
+  }
+
+  basevoltageread = voltageSum / bufferCount;
+
+  Serial.println(basevoltageread);
+
   Serial.println("FFCV3 Initialized! Awaiting Liftoff....");
 
   flightState = 1; //Set Flight State to Waiting at PAD
 
+  
+
   delay(1000);
+
 
 }
 
@@ -341,8 +373,27 @@ void loop() {
     }
   }
 
+  //light sensor updating:
+  /*
 
-  //Gain Definitions
+  //checking the light level on the photo resistor
+  int rawValue = analogRead(LIGHT_SENSER);
+  float voltage = (rawValue / ADC_RESOLUTION) * REF_VOLTAGE;
+
+  // Update moving average
+  voltageSum -= voltageBuffer[bufferIndex];
+  voltageBuffer[bufferIndex] = voltage;
+  voltageSum += voltage;
+  bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
+  if (bufferCount < BUFFER_SIZE) bufferCount++;
+
+  averageVoltage = voltageSum / bufferCount;
+  */
+
+  //^^^^^^^^^^ this need a systick its wasting clock constantly checking maybe 10-100Hz
+
+
+  //Gain Definitions <- do we even need?
   /*
     if(!liftoffDetected){
     baroWeight = 0.99;
