@@ -1,6 +1,10 @@
 #include <Wire.h>
 #include "SparkFun_BMP581_Arduino_Library.h"
 
+#define BAR_INT PA15
+#define BAR_SCL PB6
+#define BAR_SDA PB7
+
 // Create a new sensor object
 BMP581 pressureSensor;
 
@@ -8,27 +12,34 @@ BMP581 pressureSensor;
 //uint8_t i2cAddress = BMP581_I2C_ADDRESS_DEFAULT; // 0x47
 uint8_t i2cAddress = BMP581_I2C_ADDRESS_SECONDARY; // 0x46
 
+TwoWire barWire(BAR_SDA, BAR_SCL);
+
+#define UART_TX_RW_RX PA9
+#define UART_RX_RW_TX PA10
+
+HardwareSerial debugSerial(UART_RX_RW_TX,UART_TX_RW_RX);
+
 void setup()
 {
-    // Start serial
-    Serial.begin(115200);
-    Serial.println("BMP581 Example1 begin!");
+    // Start debugSerial
+    debugSerial.begin(115200);
+    debugSerial.println("BMP581 Example1 begin!");
 
     // Initialize the I2C library
-    Wire.begin();
+    barWire.begin();
 
     // Check if sensor is connected and initialize
     // Address is optional (defaults to 0x47)
-    while(pressureSensor.beginI2C(i2cAddress) != BMP5_OK)
+    while(pressureSensor.beginI2C(i2cAddress,barWire) != BMP5_OK)
     {
         // Not connected, inform user
-        Serial.println("Error: BMP581 not connected, check wiring and I2C address!");
+        debugSerial.println("Error: BMP581 not connected, check wiring and I2C address!");
 
         // Wait a bit to see if connection is established
         delay(1000);
     }
 
-    Serial.println("BMP581 connected!");
+    debugSerial.println("BMP581 connected!");
 }
 
 void loop()
@@ -41,17 +52,17 @@ void loop()
     if(err == BMP5_OK)
     {
         // Acquisistion succeeded, print temperature and pressure
-        Serial.print("Temperature (C): ");
-        Serial.print(data.temperature);
-        Serial.print("\t\t");
-        Serial.print("Pressure (Pa): ");
-        Serial.println(data.pressure);
+        debugSerial.print("Temperature (C): ");
+        debugSerial.print(data.temperature);
+        debugSerial.print("\t\t");
+        debugSerial.print("Pressure (Pa): ");
+        debugSerial.println(data.pressure);
     }
     else
     {
         // Acquisition failed, most likely a communication error (code -2)
-        Serial.print("Error getting data from sensor! Error code: ");
-        Serial.println(err);
+        debugSerial.print("Error getting data from sensor! Error code: ");
+        debugSerial.println(err);
     }
 
     // Only print every second
