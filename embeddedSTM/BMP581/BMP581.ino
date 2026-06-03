@@ -12,7 +12,7 @@ BMP581 pressureSensor;
 //uint8_t i2cAddress = BMP581_I2C_ADDRESS_DEFAULT; // 0x47
 uint8_t i2cAddress = BMP581_I2C_ADDRESS_SECONDARY; // 0x46
 
-TwoWire barWire(BAR_SDA, BAR_SCL);
+TwoWire barWire(PB_7, PB_6);
 
 #define UART_TX_RW_RX PA9
 #define UART_RX_RW_TX PA10
@@ -21,6 +21,7 @@ HardwareSerial debugSerial(UART_RX_RW_TX,UART_TX_RW_RX);
 
 void setup()
 {
+    delay(1000);
     // Start debugSerial
     debugSerial.begin(115200);
     debugSerial.println("BMP581 Example1 begin!");
