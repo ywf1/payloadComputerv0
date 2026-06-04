@@ -1,17 +1,17 @@
 #include "STM32pins.h"
-
 #include <Wire.h>
 #include <SPI.h>
-
 #include <Adafruit_LSM6DSOX.h>
 #include <SparkFun_BMP581_Arduino_Library.h>
 #include <Adafruit_Sensor.h>
 
-
 //LSM6DSOX SPI
-SPIClass SPI_4(LSM_MOSI,LSM_MISO,LSM_CLK);
+SPIClass SPI_4(IMU_MOSI,IMU_MISO,IMU_CLK);
 
 //RPI UART
+
+//baro wire
+TwoWire barWire(PB_7, PB_6);
 
 //RW/debug UART
 //HardwareSerial rcSerial(RX_1_RC_TX,TX_1_RC_RX);
@@ -104,8 +104,9 @@ void baroIRQ(void){
 // save transmission state between loops
 void setup() {
   //continuity and VBAT Analog pins
-  pinMode(CONT1,INPUT_ANALOG); pinMode(CONT2,INPUT_ANALOG); pinMode(VBAT,INPUT_ANALOG);
-  //RF Switch Pin
+  pinMode(CONT,INPUT_ANALOG);  pinMode(LIGHT,INPUT_ANALOG);
+
+  pinMode(PI_EN,OUTPUT); pinMode(PYRO,OUTPUT); pinMode(LED,OUTPUT);
 
   //Pin Setup
 
@@ -205,11 +206,6 @@ void setup() {
   ////////////
   ////CONT////
   ////////////
-  Serial.println(F("Checking CONT... "));
-    if(!(analogRead(CONT1) >= 380)){
-        Serial.println(analogRead(CONT1));
-        //errorCode1();
-  }
 
   
   Serial.println("Initializing buffers...");
@@ -354,21 +350,15 @@ void loop() {
     // Compute moving average only after buffer is filled
     if (!accelBaselineSet && accelIndex == 0) {
       accelBaselineSet = true;  // Set baseline once the buffer is full
-      #ifndef FLIGHT
-      Serial.println("IMU baseline set.");
-      #endif
     }
 
     //Calculate moving average and flip if necessary
     if (accelBaselineSet) {
       movingAvgAccel = accelSum / numSamples;
 
-      if(movingAvgAccel > 0 && !imuFlipped){
+      if(movingAvgAccel > 0 && (!imuFlipped)){
         imuFlipped = true;
         imuFlip = -1.0;
-        #ifndef FLIGHT
-        Serial.println("IMU FLIPPED....");
-        #endif
       } 
     }
   }
@@ -516,15 +506,11 @@ void loop() {
   ///////////////////////
 
     //Raw Data Stream (to CM4 for logging) - TODO add sample rate esentially
-
   /*
     if(){
-    #ifndef FLIGHT
     String str = String(currentAltitude) + "," + String(movingAvgAccel)  + "," + String(baroVelocity) + "," + 
     String(flightState) + "," + String(latitude) + "," + String(longitude) + "," + String(SIV);
-
     Serial.println(str);
-    #endif
   }
   */
 
