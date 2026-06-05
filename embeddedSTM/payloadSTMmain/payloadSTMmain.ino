@@ -297,9 +297,10 @@ void loop() {
     accelIndex = (accelIndex + 1) % numSamples;
 
     // Integrate raw acceleration for velocity
-    accel_dt = micros() - lastAccelTime;
-    accelVelocity += (acceleration - 9.81) * accel_dt * 0.000001;
-    lastAccelTime = micros();
+    currentTime = micros();
+    accel_dt = (currentTime - lastAccelTime) / 1.0e6;
+    lastAccelTime = currentTime;
+    accelVelocity += (acceleration - 9.81) * accel_dt;
 
     // Compute moving average only after buffer is filled
     if (!accelBaselineSet && accelIndex == 0) {
