@@ -45,6 +45,7 @@ unsigned long accel_dt = 0;
 unsigned long lastBaroTime = 0;
 unsigned long lastAccelTime = 0;
 unsigned long lastLightTime = 0;
+unsigned long lastGyroTime = 0;
 
 // Complementary Filter Variables
 double baroWeight = 0.9;
@@ -60,11 +61,9 @@ double deltaAltitude = 0.0;
 unsigned long baro_dt = 0;             // d/dt trend-based velocity calculation
 unsigned long previousBaroTime = 0;
 
-
 //imu normalization
-int mainAxis = 2;                              // Axis to use for main acceleration (0=x, 1=y, 2=z)
-double imuFlip = 1.0;
-bool imuFlipped = false;
+int verticalAxis = 0;                              // Axis to use for main acceleration (0=x, 1=y, 2=z)
+float axisSign = 1.0;
 
 bool liftoffDetected = false;                  // Boolean to detect liftoff state
 bool apogeeDetected = false;                   // Boolean to detect apogee state
@@ -77,17 +76,12 @@ const double liftoffAltitudeThreshold = 50.0;   // Altitude threshold for liftof
 
 float basevoltageread= 0.0;                     // lightsen base voltage for detecting nosecone deployment
 
-bool droguePyroActive = false;
-bool mainChutePyroActive = false;
-
-bool droguePyroOver = false;
-bool mainPyroOver = false;
-
 unsigned long liftoffTime = 0;
 
 volatile bool accelReady = false;
 volatile bool baroReady = false;
 volatile bool gyroReady = false;
+
 //IRQ Functions
 void accelIRQ(void){
   accelReady = true;
@@ -106,10 +100,9 @@ void setup() {
   //pin setups
   delay(3000);
   pinMode(CONT,INPUT_ANALOG);  pinMode(LIGHT,INPUT_ANALOG);
-  pinMode(PI_EN,OUTPUT); pinMode(PYRO,OUTPUT); pinMode(LED,OUTPUT);
+  pinMode(PI_EN,OUTPUT); pinMode(PYRO,OUTPUT); pinMode(LED,OUTPUT); pinMode(RW_EN, OUTPUT);
 
-
-  digitalWrite(LED,HIGH); digitalWrite(PI_EN,LOW); digitalWrite(PYRO,LOW);
+  digitalWrite(LED,HIGH); digitalWrite(PI_EN,LOW); digitalWrite(PYRO,LOW); digitalWrite(RW_EN,LOW);
 
   //Serial Initalization
   piSerial.begin(115200);  
@@ -120,21 +113,21 @@ void setup() {
   */
 
   // Initialize LSM6DSOX IMU over SPI
-  if (!lsm6dsox.begin_SPI(imuSPI,&SPI_4)) {
-    //Serial.println("LSM6DSOX not detected. Check wiring.");
-  }
+  lsm6dsox.begin_SPI(imuSPI,&SPI_4))
+  
   //accel setup
   lsm6dsox.setAccelRange(LSM6DS_ACCEL_RANGE_16_G); // Set Acceleration Range to max (16G)
   lsm6dsox.setAccelDataRate(LSM6DS_RATE_6_66K_HZ); //set Accel Data Rate
   lsm6dsox.configInt2(false,false,true); //Configure Innterupt when Accel Data Ready
   attachInterrupt(digitalPinToInterrupt(IMU_INT2), accelIRQ, RISING); // set interrupt pin for lsm6dsox acceleration data
-  
-  lsm6dsox.setGyroRange(LSM6DS_GYRO_RANGE_2000_DPS);
-  lsm6dsox.setGyroDataRate(LSM6DS_RATE_6_66K_HZ);
-  lsm6dsox.configInt1(false,true,false);
-  attachInterrupt(digitalPinToInterrupt(IMU_INT1), gyroIRQ, RISING); // set interrupt pin for lsm6dsox acceleration data
 
-  delay(1000);
+  //gyro setup
+  lsm6dsox.setGyroRange(LSM6DS_GYRO_RANGE_2000_DPS); // set gyro range to max
+  lsm6dsox.setGyroDataRate(LSM6DS_RATE_6_66K_HZ); //set gyro data rate
+  lsm6dsox.configInt1(false,true,false); //configure gyro int for
+  attachInterrupt(digitalPinToInterrupt(IMU_INT1), gyroIRQ, RISING); // set interrupt pin for lsm6dsox gyro data
+
+  delay(1000); //let imu normalize
   // Determine primary axis for flight direction based on initial attitude
   sensors_event_t accel;
   lsm6dsox.getEvent(&accel, NULL, NULL);
@@ -175,7 +168,6 @@ void setup() {
   /*
   BAROMETER SETUP
   */
-
   barWire.begin();
   // Check if sensor is connected and initialize
   pressureSensor.beginI2C(BMP581_I2C_ADDRESS_SECONDARY)
@@ -216,7 +208,6 @@ void setup() {
     accelSamples[i] = 0.0;
   }
 
-  
   //////////////////
   ////light sen ////
   //////////////////
@@ -227,7 +218,7 @@ void setup() {
   while(!baslinelightfilled)
   {
     int rawValue = analogRead(LIGHT);
-    float voltage = (rawValue / ADC_RESOLUTION) * REF_VOLTAGE;
+    float voltage = 1.0 * (rawValue / 4096.0) * 3.3;
     voltageSum -= voltageBuffer[bufferIndex];
     voltageBuffer[bufferIndex] = voltage;
     voltageSum += voltage;
@@ -380,12 +371,12 @@ void loop() {
   }
 
   if(!liftoffDetected){
-    baroWeight = 0.1;
+    baroWeight = 1;
     accelWeight = 0.0;
-  }else if(liftoffDetected && filteredVelocity <= 600 && movingAvgAccel >= -6.0){
+  }else if(liftoffDetected && filteredVelocity <= 600 && movingAvgAccel >= 6.0){
     baroWeight = 0.3;
     accelWeight = 0.7;
-  }else if(liftoffDetected && filteredVelocity > 600 && movingAvgAccel >= -6.0){
+  }else if(liftoffDetected && filteredVelocity > 600 && movingAvgAccel >= >6.0){
     baroWeight = 0.0;
     accelWeight = 1;
   } else{ //this shouldnt happen in but is here just in case, this is the catch for non-acceleration flight (vacuum chamber) or accel failure
@@ -403,7 +394,7 @@ void loop() {
 
   // Check if liftoff detected by altitude and acceleration thresholds
   if (!liftoffDetected && accelBaselineSet && barBaselineSet) {
-    if ((currentAltitude >= liftoffAltitudeThreshold) || (movingAvgAccel >= (liftoffAccelThreshold - 9.8) && currentAltitude >= 10)){
+    if ((currentAltitude >= liftoffAltitudeThreshold) || (movingAvgAccel >= 20.0 && currentAltitude >= 10)){
       liftoffDetected = true;
       digitalWrite(LED, LOW);  // Turn on LED for liftoff indication
       digitalWrite(PI_EN,HIGH);
