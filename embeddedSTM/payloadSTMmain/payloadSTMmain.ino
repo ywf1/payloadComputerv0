@@ -401,10 +401,8 @@ void loop() {
     landed = true;
     //disable RW
     digitalWrite(RW_EN, LOW);
-
     //indicate landing has been detected
-    digitalWrite(LED_B,LOW);
-    
+    digitalWrite(LED,LOW);
     //PI shutdown?
   }
 
@@ -415,8 +413,7 @@ void loop() {
 
   //Data Stream (to CM4 for logging)
   if(piSerial.available() && currentTime - lastLogTime >= loggingInterval){
-    String str = String(currentAltitude) + "," + String(movingAvgAccel)  + "," + String(baroVelocity) + "," + 
-    String(flightState);
+    String str = String(currentAltitude) + "," + String(movingAvgAccel)  + "," + String(baroVelocity) + "," + String(flightState);
     //add other relevant data such as CONT, light values, gyro would be very cool
     piSerial.println(str);
   }
