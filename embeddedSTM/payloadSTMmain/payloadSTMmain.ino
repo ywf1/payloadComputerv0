@@ -102,6 +102,10 @@ void baroIRQ(void){
   baroReady = true;
 }
 
+void gyroIRQ(void){
+  baroReady = true;
+}
+
 // save transmission state between loops
 void setup() {
   //pin setups
@@ -124,12 +128,16 @@ void setup() {
   if (!lsm6dsox.begin_SPI(imuSPI,&SPI_4)) {
     //Serial.println("LSM6DSOX not detected. Check wiring.");
   }
-
   //accel setup
   lsm6dsox.setAccelRange(LSM6DS_ACCEL_RANGE_16_G); // Set Acceleration Range to max (16G)
   lsm6dsox.setAccelDataRate(LSM6DS_RATE_6_66K_HZ); //set Accel Data Rate
   lsm6dsox.configInt2(false,false,true); //Configure Innterupt when Accel Data Ready
-  attachInterrupt(digitalPinToInterrupt(LSM_INT2), accelIRQ, RISING); // set interrupt pin for lsm6dsox acceleration data
+  attachInterrupt(digitalPinToInterrupt(IMU_INT2), accelIRQ, RISING); // set interrupt pin for lsm6dsox acceleration data
+  
+  lsm6dsox.setGyroRange(LSM6DS_GYRO_RANGE_2000_DPS);
+  lsm6dsox.setGyroDataRate(LSM6DS_RATE_6_66K_HZ);
+  lsm6dsox.configInt1(false,true,false);
+  attachInterrupt(digitalPinToInterrupt(IMU_INT1), gyroIRQ, RISING); // set interrupt pin for lsm6dsox acceleration data
 
   /*
   BAROMETER SETUP
