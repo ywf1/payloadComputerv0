@@ -6,7 +6,7 @@
 #include <Adafruit_Sensor.h>
 
 //LSM6DSOX SPI
-SPIClass SPI_4(IMU_MOSI,IMU_MISO,IMU_CLK);
+SPIClass imuSPI(IMU_MOSI,IMU_MISO,IMU_CLK);
 
 //RPI UART
 
@@ -46,7 +46,7 @@ unsigned long accel_dt = 0;
 // Timing Variables for Sampling delta time
 unsigned long lastBaroTime = 0;
 unsigned long lastAccelTime = 0;
-
+unsigned long lastLightTime = 0;
 
 // Complementary Filter Variables
 double baroWeight = 0.9;
@@ -103,35 +103,26 @@ void baroIRQ(void){
 
 // save transmission state between loops
 void setup() {
-  //continuity and VBAT Analog pins
+  //pin setups
+  delay(2000);
   pinMode(CONT,INPUT_ANALOG);  pinMode(LIGHT,INPUT_ANALOG);
-
   pinMode(PI_EN,OUTPUT); pinMode(PYRO,OUTPUT); pinMode(LED,OUTPUT);
 
-  //Pin Setup
 
-  
-  delay(3000); //delay for connecting to Serial Terminal / sensors to start up
-
-  digitalWrite(LED_B,HIGH);
+  digitalWrite(LED,HIGH); digitalWrite(PI_EN,LOW); digitalWrite(PYRO,LOW);
 
 
-  Serial.begin(115200); //Serial Port (debug)
+  //Serial.begin(115200); //Serial Port (debug)
 
   //add USB serial to CM4 initialization
   
-
-  Serial.println("payloadSaftey Initializing...");
-
   /*
   IMU SETUP
   */
 
-  Serial.println("Initializing IMU ...");
-
   // Initialize LSM6DSOX IMU over SPI
-  if (!lsm6dsox.begin_SPI(LSM_CS,&SPI_4)) {
-    Serial.println("LSM6DSOX not detected. Check wiring.");
+  if (!lsm6dsox.begin_SPI(imuSPI,&SPI_4)) {
+    //Serial.println("LSM6DSOX not detected. Check wiring.");
   }
 
   //accel setup
@@ -140,13 +131,11 @@ void setup() {
   lsm6dsox.configInt2(false,false,true); //Configure Innterupt when Accel Data Ready
   attachInterrupt(digitalPinToInterrupt(LSM_INT2), accelIRQ, RISING); // set interrupt pin for lsm6dsox acceleration data
 
-  Serial.println("IMU - GOOD");
-
   /*
   BAROMETER SETUP
   */
 
-  Wire.begin();
+  barWire.begin();
   // Check if sensor is connected and initialize
   if(pressureSensor.beginI2C(BMP581_I2C_ADDRESS_SECONDARY) != BMP5_OK)
   {
@@ -190,27 +179,21 @@ void setup() {
           .oor_press_en = BMP5_DISABLE   // Trigger interrupts when pressure goes out of range
       }
   };
-
   err = pressureSensor.setInterruptConfig(&interruptConfig);
   if(err != BMP5_OK)
   {
     //errorCode1();
   }
-
   // Setup interrupt handler for BMP581
   attachInterrupt(digitalPinToInterrupt(BMP_INT), baroIRQ, RISING);
-
-  Serial.println("BARO - GOOD");
   
-
   ////////////
   ////CONT////
   ////////////
-
+  if(analogRead(CONT) <= 100){
+    //while(1);
+  }
   
-  Serial.println("Initializing buffers...");
-
-
   // Initialize moving average samples and sum
   for (int i = 0; i < numSamples; i++) {
     pressureSamples[i] = 0.0;
@@ -228,11 +211,10 @@ void setup() {
   else if (y > x && y > z) mainAxis = 1;
   else mainAxis = 2;
 
-  Serial.print("Primary axis for acceleration: ");
-  Serial.println(mainAxis == 0 ? "X" : mainAxis == 1 ? "Y" : "Z");
+  //Serial.print("Primary axis for acceleration: ");
+  //Serial.println(mainAxis == 0 ? "X" : mainAxis == 1 ? "Y" : "Z");
 
   lsm6dsox.getEvent(&accel, NULL, NULL);
-
   double acceleration = mainAxis == 0 ? accel.acceleration.x : mainAxis == 1 ? accel.acceleration.y : accel.acceleration.z;
 
   //////////////////
@@ -244,7 +226,7 @@ void setup() {
   //baseline voltage read from the light sensor 
   while(!baslinelightfilled)
   {
-    int rawValue = analogRead(LIGHT_SENSER);
+    int rawValue = analogRead(LIGHT);
     float voltage = (rawValue / ADC_RESOLUTION) * REF_VOLTAGE;
     voltageSum -= voltageBuffer[bufferIndex];
     voltageBuffer[bufferIndex] = voltage;
@@ -261,16 +243,13 @@ void setup() {
 
   basevoltageread = voltageSum / bufferCount;
 
-  Serial.println(basevoltageread);
+  //Serial.println(basevoltageread);
 
-  Serial.println("FFCV3 Initialized! Awaiting Liftoff....");
+  //Serial.println("FFCV3 Initialized! Awaiting Liftoff....");
 
   flightState = 1; //Set Flight State to Waiting at PAD
 
-  
-
   delay(1000);
-
 
 }
 
@@ -364,45 +343,41 @@ void loop() {
   }
 
   //light sensor updating:
-  /*
-
   //checking the light level on the photo resistor
-  int rawValue = analogRead(LIGHT_SENSER);
-  float voltage = (rawValue / ADC_RESOLUTION) * REF_VOLTAGE;
+  
+  if (currentTime - lastLightTime >= lightSampleInterval) {
+    int rawValue = analogRead(LIGHT_SENSER);
+    float voltage = (rawValue / ADC_RESOLUTION) * REF_VOLTAGE;
 
-  // Update moving average
-  voltageSum -= voltageBuffer[bufferIndex];
-  voltageBuffer[bufferIndex] = voltage;
-  voltageSum += voltage;
-  bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
-  if (bufferCount < BUFFER_SIZE) bufferCount++;
+    // Update moving average
+    voltageSum -= voltageBuffer[bufferIndex];
+    voltageBuffer[bufferIndex] = voltage;
+    voltageSum += voltage;
+    bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
 
-  averageVoltage = voltageSum / bufferCount;
-  */
+    if (bufferCount < BUFFER_SIZE)
+      bufferCount++;
 
-  //^^^^^^^^^^ this need a systick its wasting clock constantly checking maybe 10-100Hz
-
+    averageVoltage = voltageSum / bufferCount;
+  }
 
   //Gain Definitions <- do we even need?
-  /*
-    if(!liftoffDetected){
-    baroWeight = 0.99;
-    accelWeight = 0.01;
+  if(!liftoffDetected){
+    baroWeight = 0.1;
+    accelWeight = 0.0;
   }else if(liftoffDetected && filteredVelocity <= 600 && movingAvgAccel >= -6.0){
     baroWeight = 0.3;
     accelWeight = 0.7;
   }else if(liftoffDetected && filteredVelocity > 600 && movingAvgAccel >= -6.0){
-    baroWeight = 0.1;
-    accelWeight = 0.9;
+    baroWeight = 0.0;
+    accelWeight = 1;
   } else{ //this shouldnt happen in but is here just in case, this is the catch for non-acceleration flight (vacuum chamber) or accel failure
-    baroWeight= .9; 
-    accelWeight = .1;
+    baroWeight= 1; 
+    accelWeight = 0;
   }
-  */
 
-
-  // Apply complementary filter -- necessary??
-  //filteredVelocity = baroWeight * baroVelocity + accelWeight * accelVelocity;
+  // Apply complementary filter
+  filteredVelocity = baroWeight * baroVelocity + accelWeight * accelVelocity;
 
 
   ////////////////
@@ -413,106 +388,71 @@ void loop() {
   if (!liftoffDetected && accelBaselineSet && barBaselineSet) {
     if ((currentAltitude >= liftoffAltitudeThreshold) || (movingAvgAccel >= (liftoffAccelThreshold - 9.8) && currentAltitude >= 10)){
       liftoffDetected = true;
-      digitalWrite(LED_B, LOW);  // Turn on LED for liftoff indication
-
-      #ifndef FLIGHT
-      Serial.println("Liftoff detected.");
-      #endif
+      digitalWrite(LED, LOW);  // Turn on LED for liftoff indication
+      digitalWrite(PI_EN,HIGH);
       
       logData = true;
       liftoffTime = micros();
       flightState = 2;
 
-      if(isCamera){
-        startRecording();
-      }
     }
   }
 
-  // Apogee Detection - technically not needed as we are light sensor based might be worth not even attempting apogee detection and liftoff/nosecone deployment only
-  /*
   if (liftoffDetected && !apogeeDetected && filteredVelocity < 0.1) { // When trend-based baro velocity ~ 0 at peak
     apogeeDetected = true;
     apogeeTime = micros();
-
-    #ifndef FLIGHT
-    Serial.println("Apogee detected.");
-    #endif
-
     digitalWrite(LED_B,HIGH); //turnoff LED for apoggee detection
     flightState = 4;
   }
 
-  // Drogue pyro activation 1s after apogee detection
-  if (apogeeDetected && (micros() - apogeeTime >= apogeeDelay) && !droguePyroActive) {
-    digitalWrite(PYRO1_DROG, HIGH);
-    droguePyroActive = true;
-    drogueActivationTime = micros();
-
-    #ifndef FLIGHT
-    Serial.println("Drogue pyro activated for drogue chute.");
-    #endif
-  }
-
-  // Main chute deployment at target altitude
-  if (apogeeDetected && (currentAltitude <= mainChuteAltitude) && !mainChutePyroActive) {
-    digitalWrite(PYRO2_MAIN, HIGH);
-    mainChutePyroActive = true;
-    mainChuteActivationTime = micros();
-    #ifndef FLIGHT
-    Serial.println("Main chute pyro activated.");
-    #endif
+  // nosecone deployment sensed
+  if (apogeeDetected && averageVoltage >= basevoltageread + LIGHT_THRESHOLD) {
+    noseOff = true;
+    noseOffTime = micros();
     flightState = 5;
   }
 
-  //landing detection
-  if (mainChutePyroActive && baroVelocity >= -1) {
-    flightState = 6;
-    landed = true;
+  // nosecone deployment sensed
+  if (apogeeDetected && noseOff && currentTime - noseOffTime >= 2000000 && !tenderCut) {
+    digitalWrite(PYRO,HIGH);
+    tenderCut = true;
+    tenderCutTime = micros();
+    flightState = 5;
+  }
 
-    #ifndef FLIGHT
-    Serial.println("landed detected");
-    #endif
+    // nosecone deployment sensed
+  if (apogeeDetected && noseOff && tenderCut && currentTime - tenderCutTime >= 1000000) {
+    digitalWrite(PYRO, LOW);
+    //Enable active stabilization
+    digitalWrite(RW_EN, HIGH);
+    rwEnabled = true;
+    flightState = 6;
+  }
+
+
+
+  //landing detection
+  if (tenderCut && baroVelocity >= -1) {
+    flightState = 7;
+    landed = true;
+    //disable RW
+    digitalWrite(RW_EN, LOW);
 
     digitalWrite(LED_B,LOW);
-
-    if(isCamera){
-      stopRecording();
-    }
-
-    MyTim->setPWM(channel, BUZ, 4000, 50); // 4kHz, 10% dutycycle
+    
+    //PI shutdown
   }
 
-  // Turn off pyros if they have been on for 1 second
-  if (!droguePyroOver && droguePyroActive && (micros() - drogueActivationTime >= 1000000)) {
-    digitalWrite(PYRO1_DROG, LOW);
-    droguePyroOver = true;
-    #ifndef FLIGHT
-    Serial.println("Drogue pyro deactivated.");
-    #endif
-  }
-
-  if (!mainPyroOver && mainChutePyroActive && (micros() - mainChuteActivationTime >= 1000000)) {
-    digitalWrite(PYRO2_MAIN, LOW);
-    mainPyroOver = true;
-    #ifndef FLIGHT
-    Serial.println("Main chute pyro deactivated.");
-    #endif
-  }
-  */
 
   ///////////////////////
   ///END STATE MACHINE///
   ///////////////////////
 
-    //Raw Data Stream (to CM4 for logging) - TODO add sample rate esentially
-  /*
-    if(){
+  //Data Stream (to CM4 for logging) - TODO add sample rate esentially
+  if(dataLogging){
     String str = String(currentAltitude) + "," + String(movingAvgAccel)  + "," + String(baroVelocity) + "," + 
     String(flightState) + "," + String(latitude) + "," + String(longitude) + "," + String(SIV);
     Serial.println(str);
   }
-  */
-
 }
 
