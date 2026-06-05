@@ -12,8 +12,6 @@
 //LSM6DSOX SPI
 SPIClass imuSPI(IMU_MOSI,IMU_MISO,IMU_CLK);
 
-
-
 //RPI UART
 //HardwareSerial piSerial(RPI_TX_STM_RX,RPI_RX_STM_TX);
 //baro wire
@@ -21,7 +19,6 @@ TwoWire barWire(PB_7, PB_6);
 
 //RW/debug UART
 //HardwareSerial rcSerial(RX_1_RC_TX,TX_1_RC_RX);
-
 
 //Peripheral Object Decleration
 Adafruit_LSM6DSOX lsm6dsox;                    // LSM6DSOX IMU sensor object
@@ -137,6 +134,44 @@ void setup() {
   lsm6dsox.configInt1(false,true,false);
   attachInterrupt(digitalPinToInterrupt(IMU_INT1), gyroIRQ, RISING); // set interrupt pin for lsm6dsox acceleration data
 
+  delay(1000);
+  // Determine primary axis for flight direction based on initial attitude
+  sensors_event_t accel;
+  lsm6dsox.getEvent(&accel, NULL, NULL);
+  double x = abs(accel.acceleration.x);
+  double y = abs(accel.acceleration.y);
+  double z = abs(accel.acceleration.z);
+
+  float rawX = accel.acceleration.x;
+  float rawY = accel.acceleration.y;
+  float rawZ = accel.acceleration.z;
+
+  // Find which axis has the largest absolute value (closest to +/- 9.81 m/s²)
+  if (abs(rawX) > abs(rawY) && abs(rawX) > abs(rawZ)) {
+    verticalAxis = 0; // X is vertical
+    if (rawX > 0) {
+      axisSign = 1.0;
+    } else {
+      axisSign = -1.0;
+    }
+  } 
+  else if (abs(rawY) > abs(rawX) && abs(rawY) > abs(rawZ)) {
+    verticalAxis = 1; // Y is vertical
+    if (rawY > 0) {
+      axisSign = 1.0;
+    } else {
+      axisSign = -1.0;
+    }
+  } 
+  else {
+    verticalAxis = 2; // Z is vertical
+    if (rawZ > 0) {
+      axisSign = 1.0;
+    } else {
+      axisSign = -1.0;
+    }
+  }
+
   /*
   BAROMETER SETUP
   */
@@ -181,20 +216,7 @@ void setup() {
     accelSamples[i] = 0.0;
   }
 
-  // Determine primary axis for flight direction based on initial attitude
-  sensors_event_t accel;
-  lsm6dsox.getEvent(&accel, NULL, NULL);
-  double x = abs(accel.acceleration.x);
-  double y = abs(accel.acceleration.y);
-  double z = abs(accel.acceleration.z);
-
-  if (x > y && x > z) mainAxis = 0;
-  else if (y > x && y > z) mainAxis = 1;
-  else mainAxis = 2;
-
-  lsm6dsox.getEvent(&accel, NULL, NULL);
-  double acceleration = mainAxis == 0 ? accel.acceleration.x : mainAxis == 1 ? accel.acceleration.y : accel.acceleration.z;
-
+  
   //////////////////
   ////light sen ////
   //////////////////
@@ -282,39 +304,45 @@ void loop() {
 
   if(accelReady){
     accelReady = false;
+
+    currentTime = micros();
+    accel_dt = (currentTime - lastAccelTime) / 1.0e6;
+    lastAccelTime = currentTime;
+    
     // Get IMU acceleration on the main axis
     sensors_event_t accel;
     lsm6dsox.getEvent(&accel, NULL, NULL);
+    // NORMALIZE
+    float rawVerticalAccel = 0.0;
+    if (verticalAxis == 0) {
+      rawVerticalAccel = accel.acceleration.x;
+    } 
+    else if (verticalAxis == 1) {
+      rawVerticalAccel = accel.acceleration.y;
+    } 
+    else {
+      rawVerticalAccel = accel.acceleration.z;
+    }
 
-    double acceleration = mainAxis == 0 ? accel.acceleration.x : mainAxis == 1 ? accel.acceleration.y : accel.acceleration.z;
+    float normalizedAccel = rawVerticalAccel * axisSign;
 
-    acceleration *= imuFlip;
+    //TRUE PHYSICS INTEGRATION
+    float trueKinematicAccel = normalizedAccel - 9.81;
+    accelVelocity += trueKinematicAccel * accel_dt;
 
     // Update moving average buffer
     accelSum -= accelSamples[accelIndex];
     accelSamples[accelIndex] = acceleration;
-    accelSum += acceleration;
+    accelSum += normalizedAccel;
     accelIndex = (accelIndex + 1) % numSamples;
-
-    // Integrate raw acceleration for velocity
-    currentTime = micros();
-    accel_dt = (currentTime - lastAccelTime) / 1.0e6;
-    lastAccelTime = currentTime;
-    accelVelocity += (acceleration - 9.81) * accel_dt;
 
     // Compute moving average only after buffer is filled
     if (!accelBaselineSet && accelIndex == 0) {
       accelBaselineSet = true;  // Set baseline once the buffer is full
     }
-
-    //Calculate moving average and flip if necessary
+    //Calculate moving average
     if (accelBaselineSet) {
       movingAvgAccel = accelSum / numSamples;
-
-      if(movingAvgAccel > 0 && (!imuFlipped)){
-        imuFlipped = true;
-        imuFlip = -1.0;
-      } 
     }
   }
 
