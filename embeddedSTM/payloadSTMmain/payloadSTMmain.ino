@@ -5,11 +5,17 @@
 #include <SparkFun_BMP581_Arduino_Library.h>
 #include <Adafruit_Sensor.h>
 
+#define Serial piSerial
+#define numSamples 30 //# of values in moving average
+#define BUFF_SIZE 20
+
 //LSM6DSOX SPI
 SPIClass imuSPI(IMU_MOSI,IMU_MISO,IMU_CLK);
 
-//RPI UART
 
+
+//RPI UART
+//HardwareSerial piSerial(RPI_TX_STM_RX,RPI_RX_STM_TX);
 //baro wire
 TwoWire barWire(PB_7, PB_6);
 
@@ -20,11 +26,6 @@ TwoWire barWire(PB_7, PB_6);
 //Peripheral Object Decleration
 Adafruit_LSM6DSOX lsm6dsox;                    // LSM6DSOX IMU sensor object
 BMP581 pressureSensor;
-
-//Variables:
-#define numSamples 30 //# of values in moving average
-#define BUFF_SIZE 20
-
 
 byte flightState = 0; //startup = 0, idle = 1, liftoff = 2, burnout = 3, apoggee & descent under drogue = 4, descent under main = 5, landing detected = 6;
 
@@ -104,18 +105,17 @@ void baroIRQ(void){
 // save transmission state between loops
 void setup() {
   //pin setups
-  delay(2000);
+  delay(3000);
   pinMode(CONT,INPUT_ANALOG);  pinMode(LIGHT,INPUT_ANALOG);
   pinMode(PI_EN,OUTPUT); pinMode(PYRO,OUTPUT); pinMode(LED,OUTPUT);
 
 
   digitalWrite(LED,HIGH); digitalWrite(PI_EN,LOW); digitalWrite(PYRO,LOW);
 
+  //Serial Initalization
+  piSerial.begin(115200);  
+  rwSerial.begin(115200);
 
-  //Serial.begin(115200); //Serial Port (debug)
-
-  //add USB serial to CM4 initialization
-  
   /*
   IMU SETUP
   */
@@ -137,34 +137,16 @@ void setup() {
 
   barWire.begin();
   // Check if sensor is connected and initialize
-  if(pressureSensor.beginI2C(BMP581_I2C_ADDRESS_SECONDARY) != BMP5_OK)
-  {
-    // Not connected, inform user
-    Serial.println("Error: BMP581 not connected, check wiring and I2C address!");
-  }
-
+  pressureSensor.beginI2C(BMP581_I2C_ADDRESS_SECONDARY)
   // Variable to track errors returned by API calls
-  int8_t err = BMP5_OK;
-
-  err = pressureSensor.setMode(BMP5_POWERMODE_CONTINOUS);
-  if(err != BMP5_OK)
-  {
-    //errorCode1();
-  }
-
+  pressureSensor.setMode(BMP5_POWERMODE_CONTINOUS);
   //multiplyers for Output data rate - 500Hz in for 1X,1X - Refer to table 9 in bmp581 datasheet
   bmp5_osr_odr_press_config osrMultipliers = {
       .osr_t = BMP5_OVERSAMPLING_1X,
       .osr_p = BMP5_OVERSAMPLING_1X,
       0,0 // Unused values, included to avoid compiler warnings-as-error
   };
-
-  err = pressureSensor.setOSRMultipliers(&osrMultipliers);
-  if(err)
-  {
-      //errorCode1();
-  }
-
+  pressureSensor.setOSRMultipliers(&osrMultipliers);
   // Configure the BMP581 to trigger interrupts whenever a measurement is performed
   BMP581_InterruptConfig interruptConfig = {
       .enable   = BMP5_INTR_ENABLE,    // Enable interrupts
@@ -179,21 +161,20 @@ void setup() {
           .oor_press_en = BMP5_DISABLE   // Trigger interrupts when pressure goes out of range
       }
   };
-  err = pressureSensor.setInterruptConfig(&interruptConfig);
-  if(err != BMP5_OK)
-  {
-    //errorCode1();
-  }
+  pressureSensor.setInterruptConfig(&interruptConfig);
   // Setup interrupt handler for BMP581
   attachInterrupt(digitalPinToInterrupt(BMP_INT), baroIRQ, RISING);
   
   ////////////
   ////CONT////
   ////////////
+  /*
   if(analogRead(CONT) <= 100){
     //while(1);
   }
   
+  */
+
   // Initialize moving average samples and sum
   for (int i = 0; i < numSamples; i++) {
     pressureSamples[i] = 0.0;
@@ -210,9 +191,6 @@ void setup() {
   if (x > y && x > z) mainAxis = 0;
   else if (y > x && y > z) mainAxis = 1;
   else mainAxis = 2;
-
-  //Serial.print("Primary axis for acceleration: ");
-  //Serial.println(mainAxis == 0 ? "X" : mainAxis == 1 ? "Y" : "Z");
 
   lsm6dsox.getEvent(&accel, NULL, NULL);
   double acceleration = mainAxis == 0 ? accel.acceleration.x : mainAxis == 1 ? accel.acceleration.y : accel.acceleration.z;
@@ -240,17 +218,14 @@ void setup() {
       baslinebarfilled=true;
     }
   }
-
   basevoltageread = voltageSum / bufferCount;
 
-  //Serial.println(basevoltageread);
+  //END LIGHT sensor
 
-  //Serial.println("FFCV3 Initialized! Awaiting Liftoff....");
-
-  flightState = 1; //Set Flight State to Waiting at PAD
+  //Set Flight State to Waiting at PAD
+  flightState = 1; 
 
   delay(1000);
-
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -344,7 +319,6 @@ void loop() {
 
   //light sensor updating:
   //checking the light level on the photo resistor
-  
   if (currentTime - lastLightTime >= lightSampleInterval) {
     int rawValue = analogRead(LIGHT_SENSER);
     float voltage = (rawValue / ADC_RESOLUTION) * REF_VOLTAGE;
@@ -361,7 +335,6 @@ void loop() {
     averageVoltage = voltageSum / bufferCount;
   }
 
-  //Gain Definitions <- do we even need?
   if(!liftoffDetected){
     baroWeight = 0.1;
     accelWeight = 0.0;
@@ -398,49 +371,41 @@ void loop() {
     }
   }
 
-  if (liftoffDetected && !apogeeDetected && filteredVelocity < 0.1) { // When trend-based baro velocity ~ 0 at peak
-    apogeeDetected = true;
-    apogeeTime = micros();
-    digitalWrite(LED_B,HIGH); //turnoff LED for apoggee detection
-    flightState = 4;
-  }
-
   // nosecone deployment sensed
-  if (apogeeDetected && averageVoltage >= basevoltageread + LIGHT_THRESHOLD) {
+  if (liftoffDetected && averageVoltage >= basevoltageread + LIGHT_THRESHOLD) {
     noseOff = true;
     noseOffTime = micros();
     flightState = 5;
   }
 
   // nosecone deployment sensed
-  if (apogeeDetected && noseOff && currentTime - noseOffTime >= 2000000 && !tenderCut) {
+  if (liftoffDetected && noseOff && currentTime - noseOffTime >= 2000000 && !tenderCut) {
     digitalWrite(PYRO,HIGH);
     tenderCut = true;
     tenderCutTime = micros();
-    flightState = 5;
+    flightState = 6;
   }
 
     // nosecone deployment sensed
-  if (apogeeDetected && noseOff && tenderCut && currentTime - tenderCutTime >= 1000000) {
+  if (liftoffDetected && noseOff && tenderCut && currentTime - tenderCutTime >= 1000000) {
     digitalWrite(PYRO, LOW);
     //Enable active stabilization
     digitalWrite(RW_EN, HIGH);
     rwEnabled = true;
-    flightState = 6;
+    flightState = 7;
   }
-
-
 
   //landing detection
   if (tenderCut && baroVelocity >= -1) {
-    flightState = 7;
+    flightState = 8;
     landed = true;
     //disable RW
     digitalWrite(RW_EN, LOW);
 
+    //indicate landing has been detected
     digitalWrite(LED_B,LOW);
     
-    //PI shutdown
+    //PI shutdown?
   }
 
 
@@ -448,11 +413,12 @@ void loop() {
   ///END STATE MACHINE///
   ///////////////////////
 
-  //Data Stream (to CM4 for logging) - TODO add sample rate esentially
-  if(dataLogging){
+  //Data Stream (to CM4 for logging)
+  if(piSerial.available() && currentTime - lastLogTime >= loggingInterval){
     String str = String(currentAltitude) + "," + String(movingAvgAccel)  + "," + String(baroVelocity) + "," + 
-    String(flightState) + "," + String(latitude) + "," + String(longitude) + "," + String(SIV);
-    Serial.println(str);
+    String(flightState);
+    //add other relevant data such as CONT, light values, gyro would be very cool
+    piSerial.println(str);
   }
 }
 
