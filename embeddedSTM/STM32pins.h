@@ -13,7 +13,7 @@
 #define IMU_MOSI PA7
 #define IMU_CS PB0
 #define IMU_INT2 PB1
-#define IMU INT1 PB10
+#define IMU_INT1 PB10
 
 #define NEO PB4
 
