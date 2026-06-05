@@ -89,10 +89,8 @@ bool mainPyroOver = false;
 unsigned long liftoffTime = 0;
 
 volatile bool accelReady = false;
-
 volatile bool baroReady = false;
-
-
+volatile bool gyroReady = false;
 //IRQ Functions
 void accelIRQ(void){
   accelReady = true;
@@ -103,7 +101,7 @@ void baroIRQ(void){
 }
 
 void gyroIRQ(void){
-  baroReady = true;
+  gyroReady = true;
 }
 
 // save transmission state between loops
@@ -176,12 +174,6 @@ void setup() {
   ////////////
   ////CONT////
   ////////////
-  /*
-  if(analogRead(CONT) <= 100){
-    //while(1);
-  }
-  
-  */
 
   // Initialize moving average samples and sum
   for (int i = 0; i < numSamples; i++) {
@@ -323,6 +315,19 @@ void loop() {
         imuFlip = -1.0;
       } 
     }
+  }
+
+  if(gyroReady){
+    gyroReady = false;
+
+    currentTime = micros();
+    unsigned long gyroDt = (currentTime-lastGyroTime) / 1.0e6;
+    lastGyroTime = currentTime;
+
+    sensors_event_t accel, gyro, temp;
+    lsm6dsox.getEvent(NULL, &gyro, NULL);
+    //integrate dps of each axis to get angle
+    totalZrot += gyro.gyro.x; totalYrot = gyro.gyro.y; totalZrot = gyro.gyro.z;
   }
 
   //light sensor updating:
