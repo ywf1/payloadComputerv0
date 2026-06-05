@@ -321,13 +321,15 @@ void loop() {
     gyroReady = false;
 
     currentTime = micros();
-    unsigned long gyroDt = (currentTime-lastGyroTime) / 1.0e6;
+    float gyroDt = (currentTime-lastGyroTime) / 1.0e6;
     lastGyroTime = currentTime;
 
     sensors_event_t gyro;
     lsm6dsox.getEvent(NULL, &gyro, NULL);
     //integrate dps of each axis to get angle
-    totalZrot += gyro.gyro.x; totalYrot = gyro.gyro.y; totalZrot = gyro.gyro.z;
+    totalXrot += gyro.gyro.x * gyroDt;
+    totalYrot = gyro.gyro.y * gyroDt;
+    totalZrot = gyro.gyro.z * gyroDt;
   }
 
   //light sensor updating:
