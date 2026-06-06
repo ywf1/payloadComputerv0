@@ -348,8 +348,8 @@ void loop() {
     lsm6dsox.getEvent(NULL, &gyro, NULL);
     //integrate dps of each axis to get angle
     totalXrot += gyro.gyro.x * gyroDt;
-    totalYrot = gyro.gyro.y * gyroDt;
-    totalZrot = gyro.gyro.z * gyroDt;
+    totalYrot += gyro.gyro.y * gyroDt;
+    totalZrot += gyro.gyro.z * gyroDt;
   }
 
   //light sensor updating:
