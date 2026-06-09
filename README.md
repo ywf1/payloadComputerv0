@@ -9,19 +9,18 @@ High Level Execution
     - Wait for liftoff
 3) Liftoff detected
 4) Turn on RPI as soon as liftoff
-5) RPI Starts recording on OS boot
-6) (optional) STM32 data stream to rpi
-7) Apogee arrived
+5) RPI starts camera recording on OS boot
+6) STM32 data stream to rpi
+7) Apogee detected (optional)
 8) nose cone seperates (detect with light sensor)
     -2 second delay
 9) activate pyro to cut tender descender
-    - delay (3s for parachute to unfurl)
+    - delay (3s for parachute to fully unfurl)
 10) activate reaction wheel
-11) descend until landing (turn off reactionwheel at 25ft?)
-    - note - OS optimizations/recording optimizations for sudden power loss due to impact
-12) Upon landing execute post processing, disable reactionwheel, stop data logging
+11) descend until landing (turn off reactionwheel at 25ft)
+    - note - OS optimizations (saving .h624) optimizations for sudden power loss due to impact
+12) Upon landing stop recording, stop data logging, execute post processing
 13) (optional) after post processing is over, shutdown OS, turnoff RPI (this can also be done after like 10 minutes of recording or something)
 
 System Telemtry:
-
 RPI CM4 <---STM Data---> STM32 <---CONT Data (optional), Enable signal---> RW ESP32
