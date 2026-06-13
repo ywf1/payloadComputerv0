@@ -5,9 +5,9 @@
 #include <SparkFun_BMP581_Arduino_Library.h>
 #include <Adafruit_Sensor.h>
 
-#define Serial piSerial
+#define piSerial Serial
 #define numSamples 30 //# of values in moving average
-#define BUFF_SIZE 20
+#define LIGHT_THRESHOLD 0.5
 
 //LSM6DSOX SPI
 SPIClass imuSPI(IMU_MOSI,IMU_MISO,IMU_CLK);
@@ -18,13 +18,13 @@ SPIClass imuSPI(IMU_MOSI,IMU_MISO,IMU_CLK);
 TwoWire barWire(PB_7, PB_6);
 
 //RW/debug UART
-//HardwareSerial rcSerial(RX_1_RC_TX,TX_1_RC_RX);
+HardwareSerial rwSerial(UART_RX_RW_TX,UART_TX_RW_RX);
 
 //Peripheral Object Decleration
 Adafruit_LSM6DSOX lsm6dsox;                    // LSM6DSOX IMU sensor object
 BMP581 pressureSensor;
 
-byte flightState = 0; //startup = 0, idle = 1, liftoff = 2, burnout = 3, apoggee & descent under drogue = 4, descent under main = 5, landing detected = 6;
+byte flightState = 0; //startup = 0, idle = 1, liftoff = 2, burnout = 3, apoggee = 4, noseOff = 5, tenderCut = 6, landed =7;
 
 // Moving Average Variables for Barometric Pressure
 double pressureSamples[numSamples];
@@ -33,6 +33,15 @@ volatile double pressureSum = 0.0;
 volatile double movingAverage = 0.0;
 double baselinePressure = 0.0;
 
+// Moving Average Variables for light sensor data
+double lightSamples[numSamples];
+uint lightIndex = 0;
+volatile double lightSum = 0.0;
+volatile double movingAverageLight = 0.0;
+double baselineLight = 0.0;
+
+const unsigned long lightSampleInterval = 100000; //10 Hz light sample interval
+
 // Moving Average Variables for Accelerometer Data
 double accelSamples[numSamples];
 uint accelIndex = 0;
@@ -40,6 +49,10 @@ double accelSum = 0.0;
 double movingAvgAccel = 0.0;
 double lastAccel = 0.0;                         
 unsigned long accel_dt = 0;
+
+double rawXgyro = 0.0;
+double rawYgyro = 0.0;
+double rawZgyro = 0.0;
 
 // Timing Variables for Sampling delta time
 unsigned long lastBaroTime = 0;
@@ -61,20 +74,37 @@ double deltaAltitude = 0.0;
 unsigned long baro_dt = 0;             // d/dt trend-based velocity calculation
 unsigned long previousBaroTime = 0;
 
+//Event helpers
+unsigned long noseOffTime = 0;
+unsigned long tenderCutTime = 0;
+unsigned long apogeeTime = 0;
+
 //imu normalization
 int verticalAxis = 0;                              // Axis to use for main acceleration (0=x, 1=y, 2=z)
 float axisSign = 1.0;
 
 bool liftoffDetected = false;                  // Boolean to detect liftoff state
 bool apogeeDetected = false;                   // Boolean to detect apogee state
+bool burnoutDetected = false;
+bool noseOff = false;
+bool tenderCut = false;
+bool rwEnabled = false;
+bool landed = false;
+
+unsigned long lastLogTime = 0;
+const unsigned long loggingInterval = 167; //~6khz data stream
+bool logData = false;
+
+//landing detection
+unsigned long landingStableStart = 0;
+const unsigned long LANDING_STABLE_US = 3000000UL;    // 3 s of stable low-and-slow before "landed"
+const double LANDING_VEL_BAND     = 2.0;              // m/s
 
 bool barBaselineSet = false;                      // Tracks if baseline pressure has been set
 bool accelBaselineSet = false;                    // Tracks if baseline accel has been set
 
 const double liftoffAccelThreshold = 3.0;       // Acceleration threshold for liftoff (in m/s^2)
 const double liftoffAltitudeThreshold = 50.0;   // Altitude threshold for liftoff (in meters)
-
-float basevoltageread= 0.0;                     // lightsen base voltage for detecting nosecone deployment
 
 unsigned long liftoffTime = 0;
 
@@ -113,7 +143,7 @@ void setup() {
   */
 
   // Initialize LSM6DSOX IMU over SPI
-  lsm6dsox.begin_SPI(imuSPI,&SPI_4))
+  lsm6dsox.begin_SPI(IMU_CS,&imuSPI);
   
   //accel setup
   lsm6dsox.setAccelRange(LSM6DS_ACCEL_RANGE_16_G); // Set Acceleration Range to max (16G)
@@ -170,7 +200,7 @@ void setup() {
   */
   barWire.begin();
   // Check if sensor is connected and initialize
-  pressureSensor.beginI2C(BMP581_I2C_ADDRESS_SECONDARY)
+  pressureSensor.beginI2C(BMP581_I2C_ADDRESS_SECONDARY);
   // Variable to track errors returned by API calls
   pressureSensor.setMode(BMP5_POWERMODE_CONTINOUS);
   //multiplyers for Output data rate - 500Hz in for 1X,1X - Refer to table 9 in bmp581 datasheet
@@ -196,7 +226,7 @@ void setup() {
   };
   pressureSensor.setInterruptConfig(&interruptConfig);
   // Setup interrupt handler for BMP581
-  attachInterrupt(digitalPinToInterrupt(BMP_INT), baroIRQ, RISING);
+  attachInterrupt(digitalPinToInterrupt(BAR_INT), baroIRQ, RISING);
   
   ////////////
   ////CONT////
@@ -214,24 +244,29 @@ void setup() {
 
   //essentially polls light sensor data to set a baseline for the payload inside rocket
   bool baslinelightfilled = false;
-  //baseline voltage read from the light sensor 
+  //baseline voltage read from the light sensor
+
   while(!baslinelightfilled)
   {
     int rawValue = analogRead(LIGHT);
-    float voltage = 1.0 * (rawValue / 4096.0) * 3.3;
-    voltageSum -= voltageBuffer[bufferIndex];
-    voltageBuffer[bufferIndex] = voltage;
-    voltageSum += voltage;
-    bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
-    if (bufferCount < BUFFER_SIZE) 
+    float voltage = 1.0 * (rawValue / 4095.0) * 3.3;
+
+    lightSum -= lightSamples[lightIndex];
+    lightSamples[lightIndex] = voltage;
+    lightSum += voltage;
+    lightIndex = (lightIndex + 1) % numSamples;
+
+    if (lightIndex < numSamples) 
     {
-      bufferCount++;
+      lightIndex++;
     }else
     {
-      baslinebarfilled=true;
+      baslinelightfilled = true;
     }
   }
-  basevoltageread = voltageSum / bufferCount;
+
+  baselineLight = baselineLight / numSamples;
+  movingAverageLight = baselineLight;
 
   //END LIGHT sensor
 
@@ -323,7 +358,7 @@ void loop() {
 
     // Update moving average buffer
     accelSum -= accelSamples[accelIndex];
-    accelSamples[accelIndex] = acceleration;
+    accelSamples[accelIndex] = normalizedAccel;
     accelSum += normalizedAccel;
     accelIndex = (accelIndex + 1) % numSamples;
 
@@ -347,38 +382,38 @@ void loop() {
     sensors_event_t gyro;
     lsm6dsox.getEvent(NULL, &gyro, NULL);
     //integrate dps of each axis to get angle
-    totalXrot += gyro.gyro.x * gyroDt;
-    totalYrot += gyro.gyro.y * gyroDt;
-    totalZrot += gyro.gyro.z * gyroDt;
+    rawXgyro = gyro.gyro.x;
+    rawYgyro = gyro.gyro.y;
+    rawZgyro = gyro.gyro.z;
   }
 
   //light sensor updating:
   //checking the light level on the photo resistor
   if (currentTime - lastLightTime >= lightSampleInterval) {
-    int rawValue = analogRead(LIGHT_SENSER);
-    float voltage = (rawValue / ADC_RESOLUTION) * REF_VOLTAGE;
+    int rawValue = analogRead(LIGHT);
+    float voltage = 1.0 * (rawValue / 4095.0) * 3.3;
+    lightSum -= lightSamples[lightIndex];
+    lightSamples[lightIndex] = voltage;
+    lightSum += voltage;
+    lightIndex = (lightIndex + 1) % numSamples;
 
-    // Update moving average
-    voltageSum -= voltageBuffer[bufferIndex];
-    voltageBuffer[bufferIndex] = voltage;
-    voltageSum += voltage;
-    bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
+    if (lightIndex < numSamples) 
+    {
+      lightIndex++;
+    }
 
-    if (bufferCount < BUFFER_SIZE)
-      bufferCount++;
-
-    averageVoltage = voltageSum / bufferCount;
+    movingAverageLight = lightSum / numSamples;
   }
 
   if(!liftoffDetected){
-    baroWeight = 1;
-    accelWeight = 0.0;
-  }else if(liftoffDetected && filteredVelocity <= 600 && movingAvgAccel >= 6.0){
-    baroWeight = 0.3;
-    accelWeight = 0.7;
-  }else if(liftoffDetected && filteredVelocity > 600 && movingAvgAccel >= >6.0){
     baroWeight = 0.0;
-    accelWeight = 1;
+    accelWeight = 0.0;
+  }else if(liftoffDetected && !burnoutDetected){
+    baroWeight = 0.0;
+    accelWeight = 1.0;
+  }else if(liftoffDetected && burnoutDetected && accelVelocity <= 300){
+    baroWeight = 0.05;
+    accelWeight = 0.95;
   } else{ //this shouldnt happen in but is here just in case, this is the catch for non-acceleration flight (vacuum chamber) or accel failure
     baroWeight= 1; 
     accelWeight = 0;
@@ -397,8 +432,8 @@ void loop() {
     if ((currentAltitude >= liftoffAltitudeThreshold) || (movingAvgAccel >= 20.0 && currentAltitude >= 10)){
       liftoffDetected = true;
       digitalWrite(LED, LOW);  // Turn on LED for liftoff indication
-      digitalWrite(PI_EN,HIGH);
-      
+      digitalWrite(PI_EN,HIGH);// turn on rpi
+
       logData = true;
       liftoffTime = micros();
       flightState = 2;
@@ -406,14 +441,22 @@ void loop() {
     }
   }
 
+  // Apogee Detection (fused velocity)
+  if (liftoffDetected && burnoutDetected && !apogeeDetected && filteredVelocity < 0.1) { // When trend-based baro velocity ~ 0 at peak
+    apogeeDetected = true;
+    apogeeTime = micros();
+    digitalWrite(LED,HIGH); //turnoff LED for apoggee detection
+    flightState = 4;
+  }
+
   // nosecone deployment sensed
-  if (liftoffDetected && averageVoltage >= basevoltageread + LIGHT_THRESHOLD) {
+  if (liftoffDetected && movingAverageLight >= (baselineLight + LIGHT_THRESHOLD)){
     noseOff = true;
     noseOffTime = micros();
     flightState = 5;
   }
 
-  // nosecone deployment sensed
+  // cut tender 
   if (liftoffDetected && noseOff && currentTime - noseOffTime >= 2000000 && !tenderCut) {
     digitalWrite(PYRO,HIGH);
     tenderCut = true;
@@ -421,7 +464,7 @@ void loop() {
     flightState = 6;
   }
 
-    // nosecone deployment sensed
+  //turnoff tender pyro
   if (liftoffDetected && noseOff && tenderCut && currentTime - tenderCutTime >= 1000000) {
     digitalWrite(PYRO, LOW);
     //Enable active stabilization
@@ -430,17 +473,19 @@ void loop() {
     flightState = 7;
   }
 
-  //landing detection
-  if (tenderCut && baroVelocity >= -1) {
-    flightState = 8;
-    landed = true;
-    //disable RW
-    digitalWrite(RW_EN, LOW);
-    //indicate landing has been detected
-    digitalWrite(LED,LOW);
-    //PI shutdown?
+  if(tenderCut && !landed && fabs(baroVelocity) < LANDING_VEL_BAND) {
+    if (landingStableStart == 0) {
+      landingStableStart = micros();                 // start the stability timer
+    } else if (micros() - landingStableStart >= LANDING_STABLE_US) {
+      landed = true;
+      flightState = 8;
+      digitalWrite(LED, LOW);
+      digitalWrite(RW_EN, LOW);
+      //Pi shutdown
+    }
+  } else {
+    landingStableStart = 0;                          // condition broke -> reset timer
   }
-
 
   ///////////////////////
   ///END STATE MACHINE///
