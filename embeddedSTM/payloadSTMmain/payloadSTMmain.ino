@@ -5,7 +5,7 @@
 #include <SparkFun_BMP581_Arduino_Library.h>
 #include <Adafruit_Sensor.h>
 
-#define piSerial Serial
+#define piSerial Serial          // NOTE (next phase): confirm this is USB CDC in your build
 #define numSamples 30 //# of values in moving average
 #define LIGHT_THRESHOLD 0.5
 
@@ -24,7 +24,7 @@ HardwareSerial rwSerial(UART_RX_RW_TX,UART_TX_RW_RX);
 Adafruit_LSM6DSOX lsm6dsox;                    // LSM6DSOX IMU sensor object
 BMP581 pressureSensor;
 
-byte flightState = 0; //startup = 0, idle = 1, liftoff = 2, burnout = 3, apoggee = 4, noseOff = 5, tenderCut = 6, landed =7;
+byte flightState = 0; // FIX #8: startup=0, idle=1, liftoff=2, burnout=3, apogee=4, noseOff=5, tenderCut=6, descent=7, landed=8
 
 // Moving Average Variables for Barometric Pressure
 double pressureSamples[numSamples];
@@ -48,7 +48,7 @@ uint accelIndex = 0;
 double accelSum = 0.0;
 double movingAvgAccel = 0.0;
 double lastAccel = 0.0;                         
-unsigned long accel_dt = 0;
+float accel_dt = 0.0;                          // FIX #3: was unsigned long -> dt truncated to 0
 
 double rawXgyro = 0.0;
 double rawYgyro = 0.0;
@@ -78,6 +78,8 @@ unsigned long previousBaroTime = 0;
 unsigned long noseOffTime = 0;
 unsigned long tenderCutTime = 0;
 unsigned long apogeeTime = 0;
+unsigned long noseLightStart = 0;                     // FIX #6: light-debounce timer
+const unsigned long NOSE_LIGHT_DEBOUNCE_US = 200000;  // FIX #6: light must persist 200 ms
 
 //imu normalization
 int verticalAxis = 0;                              // Axis to use for main acceleration (0=x, 1=y, 2=z)
@@ -88,6 +90,7 @@ bool apogeeDetected = false;                   // Boolean to detect apogee state
 bool burnoutDetected = false;
 bool noseOff = false;
 bool tenderCut = false;
+bool pyroOff = false;                          // FIX #13: tracks the end of the pyro fire pulse
 bool rwEnabled = false;
 bool landed = false;
 
@@ -105,6 +108,7 @@ bool accelBaselineSet = false;                    // Tracks if baseline accel ha
 
 const double liftoffAccelThreshold = 3.0;       // Acceleration threshold for liftoff (in m/s^2)
 const double liftoffAltitudeThreshold = 50.0;   // Altitude threshold for liftoff (in meters)
+const double burnoutAccelThreshold = 5.0;       // FIX #4: avg axial accel below this (after burn) = burnout
 
 unsigned long liftoffTime = 0;
 
@@ -125,6 +129,22 @@ void gyroIRQ(void){
   gyroReady = true;
 }
 
+// FIX #11: critical init failure -> keep all actuators safe and blink a code forever.
+// (A dead IMU/baro means liftoff/apogee/landing detection is unreliable, so the
+//  safe response is to NOT arm or fly. PI_EN/PYRO/RW are forced low here.)
+void flightError(int code){
+  digitalWrite(PI_EN, LOW);
+  digitalWrite(PYRO, LOW);
+  digitalWrite(RW_EN, LOW);
+  while(true){
+    for(int i = 0; i < code; i++){
+      digitalWrite(LED, HIGH); delay(200);
+      digitalWrite(LED, LOW);  delay(200);
+    }
+    delay(1000);
+  }
+}
+
 // save transmission state between loops
 void setup() {
   //pin setups
@@ -133,6 +153,8 @@ void setup() {
   pinMode(PI_EN,OUTPUT); pinMode(PYRO,OUTPUT); pinMode(LED,OUTPUT); pinMode(RW_EN, OUTPUT);
 
   digitalWrite(LED,HIGH); digitalWrite(PI_EN,LOW); digitalWrite(PYRO,LOW); digitalWrite(RW_EN,LOW);
+
+  analogReadResolution(12);   // FIX #7: default is 10-bit; code scales by 4095 (12-bit)
 
   //Serial Initalization
   piSerial.begin(115200);  
@@ -143,7 +165,9 @@ void setup() {
   */
 
   // Initialize LSM6DSOX IMU over SPI
-  lsm6dsox.begin_SPI(IMU_CS,&imuSPI);
+  if(!lsm6dsox.begin_SPI(IMU_CS,&imuSPI)){   // FIX #11: was unchecked
+    flightError(1);
+  }
   
   //accel setup
   lsm6dsox.setAccelRange(LSM6DS_ACCEL_RANGE_16_G); // Set Acceleration Range to max (16G)
@@ -200,8 +224,10 @@ void setup() {
   */
   barWire.begin();
   // Check if sensor is connected and initialize
-  pressureSensor.beginI2C(BMP581_I2C_ADDRESS_SECONDARY);
-  // Variable to track errors returned by API calls
+  // FIX #11: was unchecked AND used the default Wire bus instead of barWire (PB6/PB7).
+  if(pressureSensor.beginI2C(BMP581_I2C_ADDRESS_SECONDARY, barWire) != BMP5_OK){
+    flightError(2);
+  }
   pressureSensor.setMode(BMP5_POWERMODE_CONTINOUS);
   //multiplyers for Output data rate - 500Hz in for 1X,1X - Refer to table 9 in bmp581 datasheet
   bmp5_osr_odr_press_config osrMultipliers = {
@@ -243,29 +269,19 @@ void setup() {
   //////////////////
 
   //essentially polls light sensor data to set a baseline for the payload inside rocket
-  bool baslinelightfilled = false;
-  //baseline voltage read from the light sensor
-
-  while(!baslinelightfilled)
-  {
+  // FIX #1 + #2: original while-loop double-incremented lightIndex (never exited,
+  // wrote one past the array) and divided the wrong variable. Rewritten as a
+  // simple correct fill that also primes lightSum/lightIndex for loop().
+  double lightBaselineSum = 0.0;
+  for (int i = 0; i < numSamples; i++) {
     int rawValue = analogRead(LIGHT);
-    float voltage = 1.0 * (rawValue / 4095.0) * 3.3;
-
-    lightSum -= lightSamples[lightIndex];
-    lightSamples[lightIndex] = voltage;
-    lightSum += voltage;
-    lightIndex = (lightIndex + 1) % numSamples;
-
-    if (lightIndex < numSamples) 
-    {
-      lightIndex++;
-    }else
-    {
-      baslinelightfilled = true;
-    }
+    float voltage = (rawValue / 4095.0) * 3.3;
+    lightSamples[i] = voltage;            // prime the ring buffer
+    lightBaselineSum += voltage;
   }
-
-  baselineLight = baselineLight / numSamples;
+  lightSum = lightBaselineSum;            // keep running average consistent for loop()
+  lightIndex = 0;                         // next sample in loop() overwrites slot 0
+  baselineLight = lightBaselineSum / numSamples;   // FIX #2: was baselineLight / numSamples (=0)
   movingAverageLight = baselineLight;
 
   //END LIGHT sensor
@@ -278,7 +294,7 @@ void setup() {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////LOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOP////////////////////////////////
+////////////////////LOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOP////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -308,7 +324,7 @@ void loop() {
       barBaselineSet = true;
 
       #ifndef FLIGHT
-      Serial.println("Baseline pressure set for relative altitude calculation.");
+      rwSerial.println("Baseline pressure set for relative altitude calculation.");  // FIX #14: was Serial (the Pi data link)
       #endif
     }
 
@@ -316,7 +332,7 @@ void loop() {
       currentAltitude = 44330.0 * (1.0 - pow(movingAverage / baselinePressure, 0.1903));
 
       // Update trend-based velocity
-      if (currentTime - previousBaroTime >= 100000) {  // 500 ms interval for trend calculation
+      if (currentTime - previousBaroTime >= 100000) {  // 100 ms interval for trend calculation
         float deltaAltitude = currentAltitude - lastAltitude;
         float deltaTime = (currentTime - previousBaroTime) / 1.0e6; // Convert to seconds
         baroVelocity = deltaAltitude / deltaTime;  // Calculate trend-based velocity
@@ -332,7 +348,7 @@ void loop() {
     accelReady = false;
 
     currentTime = micros();
-    accel_dt = (currentTime - lastAccelTime) / 1.0e6;
+    accel_dt = (currentTime - lastAccelTime) / 1.0e6;   // FIX #3: now a real float dt (seconds)
     lastAccelTime = currentTime;
     
     // Get IMU acceleration on the main axis
@@ -390,17 +406,13 @@ void loop() {
   //light sensor updating:
   //checking the light level on the photo resistor
   if (currentTime - lastLightTime >= lightSampleInterval) {
+    lastLightTime = currentTime;                  // FIX #10: original never updated -> sampled every loop
     int rawValue = analogRead(LIGHT);
-    float voltage = 1.0 * (rawValue / 4095.0) * 3.3;
+    float voltage = (rawValue / 4095.0) * 3.3;
     lightSum -= lightSamples[lightIndex];
     lightSamples[lightIndex] = voltage;
     lightSum += voltage;
-    lightIndex = (lightIndex + 1) % numSamples;
-
-    if (lightIndex < numSamples) 
-    {
-      lightIndex++;
-    }
+    lightIndex = (lightIndex + 1) % numSamples;   // FIX #10: removed second increment (double-advance + OOB)
 
     movingAverageLight = lightSum / numSamples;
   }
@@ -438,7 +450,25 @@ void loop() {
       liftoffTime = micros();
       flightState = 2;
 
+      // SAFETY: re-capture the dark-bay light baseline at liftoff so changes in pad
+      // ambient (cloud cover, sun angle) during the armed wait can't skew it. The
+      // running average is the last ~3 s of light with the cone still on, i.e. the
+      // current dark level. Frozen here for the rest of the flight -- separation is
+      // a step ABOVE this; we deliberately do NOT keep adapting it (an adaptive
+      // baseline could track out a real separation and never trigger).
+      baselineLight = movingAverageLight;
+
     }
+  }
+
+  // FIX #4: burnout detection (was never set). After a minimum burn time, the
+  // averaged axial acceleration falling back below threshold means the motor has
+  // stopped pushing. Burnout enables the velocity filter/apogee logic AND is the
+  // safety gate that arms nosecone/pyro (see below).
+  if (liftoffDetected && !burnoutDetected && (currentTime - liftoffTime >= 300000) &&
+      movingAvgAccel < burnoutAccelThreshold) {
+    burnoutDetected = true;
+    flightState = 3;
   }
 
   // Apogee Detection (fused velocity)
@@ -450,10 +480,26 @@ void loop() {
   }
 
   // nosecone deployment sensed
-  if (liftoffDetected && movingAverageLight >= (baselineLight + LIGHT_THRESHOLD)){
-    noseOff = true;
-    noseOffTime = micros();
-    flightState = 5;
+  // FIX #6 (SAFETY): gated on liftoff ONLY. The light sensor is the authority for
+  // separation -- with the nosecone on, the payload bay must be light-tight, so the
+  // sensor physically cannot read bright until the cone is actually off. Safety
+  // against an early fire therefore rests on a VERIFIED-DARK BAY (ground test),
+  // not on any flight-phase algorithm or timer. The liftoff gate only rejects
+  // ground/handling false-triggers. The debounce below is sensor noise rejection
+  // (one ADC glitch must not fire a pyro), NOT a flight timer.
+  // TRADE-OFF: with no burnout gate and no backup, the light sensor is a single
+  // point of failure for recovery -- if it fails dark, nothing cuts the tender.
+  if (liftoffDetected && !noseOff &&
+      movingAverageLight >= (baselineLight + LIGHT_THRESHOLD)) {
+    if (noseLightStart == 0) {
+      noseLightStart = currentTime;                  // start the debounce timer
+    } else if (currentTime - noseLightStart >= NOSE_LIGHT_DEBOUNCE_US) {
+      noseOff = true;
+      noseOffTime = micros();
+      flightState = 5;
+    }
+  } else if (!noseOff) {
+    noseLightStart = 0;                              // condition broke -> reset debounce
   }
 
   // cut tender 
@@ -464,13 +510,17 @@ void loop() {
     flightState = 6;
   }
 
-  //turnoff tender pyro
-  if (liftoffDetected && noseOff && tenderCut && currentTime - tenderCutTime >= 1000000) {
+  // FIX #13: end the pyro fire pulse after 1 s (separated from RW activation).
+  if (liftoffDetected && tenderCut && !pyroOff && currentTime - tenderCutTime >= 1000000) {
     digitalWrite(PYRO, LOW);
-    //Enable active stabilization
+    pyroOff = true;
+  }
+
+  // FIX #13: enable active stabilization 3 s after tender cut (CONOPS: let the chute fill).
+  if (liftoffDetected && tenderCut && !rwEnabled && currentTime - tenderCutTime >= 3000000) {
     digitalWrite(RW_EN, HIGH);
     rwEnabled = true;
-    flightState = 7;
+    flightState = 7;   // descent / stabilizing
   }
 
   if(tenderCut && !landed && fabs(baroVelocity) < LANDING_VEL_BAND) {
@@ -478,10 +528,11 @@ void loop() {
       landingStableStart = micros();                 // start the stability timer
     } else if (micros() - landingStableStart >= LANDING_STABLE_US) {
       landed = true;
-      flightState = 8;
+      flightState = 8;   // landed
       digitalWrite(LED, LOW);
       digitalWrite(RW_EN, LOW);
-      //Pi shutdown
+      logData = false;   // FIX: stop the data stream on landing (CONOPS step 12)
+      //Pi stop-recording / shutdown handshake -> RPi-link phase
     }
   } else {
     landingStableStart = 0;                          // condition broke -> reset timer
@@ -492,10 +543,15 @@ void loop() {
   ///////////////////////
 
   //Data Stream (to CM4 for logging)
-  if(piSerial.available() && currentTime - lastLogTime >= loggingInterval){
+  // FIX #5: was gated on piSerial.available() (only transmitted when the Pi sent
+  // bytes) and lastLogTime was never updated (no rate limit). Now gated on logData
+  // and properly rate-limited. (ASCII CSV + String kept for now; the binary framed
+  // protocol w/ timestamp+seq+CRC and the PI_READY/TIME_SYNC/SEPARATION/STOP
+  // handshake are the RPi-link phase.)
+  if(logData && currentTime - lastLogTime >= loggingInterval){
+    lastLogTime = currentTime;
     String str = String(currentAltitude) + "," + String(movingAvgAccel)  + "," + String(baroVelocity) + "," + String(flightState);
     //add other relevant data such as CONT, light values, gyro would be very cool
     piSerial.println(str);
   }
 }
-
